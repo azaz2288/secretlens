@@ -19,11 +19,11 @@ secretlens --repo /path/to/repository
 - GitHub token、AWS access ID、私钥标记、引号中的长敏感字段赋值候选。
 - UTF-8、带 BOM 的 UTF-16/UTF-32；二进制中的 ASCII-compatible token 也不被静默跳过。
 - 默认单文件 1 MiB、全部索引 32 MiB、10,000 文件；超限、冲突、子模块、符号链接和 Git 错误均失败关闭。先检查所有大小，再读取内容，不把部分检查标为 clean。
-- 只读工作目录；不编辑源码、索引、Git 配置或历史。
+- 默认扫描只读；不编辑源码、索引、Git 配置或历史。v0.4显式hook安装/卸载仅改变目标仓库 `.git/hooks/pre-commit`。
 
 ## 重要限制
 
-这是 v0.2 的可用基础，**不是全面密钥发现或完整安全保障**。不检测所有供应商、加密/压缩/转义后的密钥、无 BOM 的宽字符编码；短密码也可能漏报。占位符可能误报，只允许下述显式精确例外，不提供通配忽略。报告中的路径可能本身敏感；指纹是确定性 SHA256，不是加密，低熵值可能被字典猜测。Git 对象及本地 Git 可执行程序视为可信；大小限制不是操作系统级资源沙箱。
+这是 v0.4 的可用工程阶段，**不是全面密钥发现或完整安全保障**。不检测所有供应商、加密/压缩/转义后的密钥、无 BOM 的宽字符编码；短密码也可能漏报。占位符可能误报，只允许下述显式精确例外，不提供通配忽略。报告中的路径可能本身敏感；指纹是确定性 SHA256，不是加密，低熵值可能被字典猜测。Git 对象及本地 Git 可执行程序视为可信；大小限制不是操作系统级资源沙箱。
 
 扫描结果绑定获取索引列表时的 blob 集合；之后改动暂存内容必须重新运行。秘密进入 Git 历史后，删除文件不能撤销泄漏，仍须吊销/轮换凭据。不改写任何已有项目历史。
 
@@ -51,10 +51,42 @@ v0.3批量读取：非空索引用三个Git进程完成索引列表、全部对�
 
 reviewer只是审计元数据，没有身份认证/签名，不是多方审批服务。由CI维护者保护策略文件和传入参数，不能允许待审PR自己换策略或命令来放行。元数据中不要写实际密钥或敏感信息。
 
-## 后续工程里程碑
+## v0.4 显式提交前门禁
+
+先安装到独立环境，再明确选择要启用的仓库：
+
+```sh
+python -m venv .venv
+# Windows:
+.venv/Scripts/python.exe -m pip install .
+.venv/Scripts/python.exe -I -m secretlens --repo /path/to/repository --install-hook
+# macOS/Linux:
+.venv/bin/python -m pip install .
+.venv/bin/python -I -m secretlens --repo /path/to/repository --install-hook
+```
+
+也可用 `secretlens --repo /path/to/repository --install-hook --python /absolute/path/to/installed/python` 指定runtime。安装前用隔离模式确认该Python装有当前版本，源码目录直接启动并不等于该runtime已安装包。安装不扫描/改动索引，不修改Git配置，不自动在其他仓库启用。没有 `--force`：已有hook（含自己安装过的）一律保留并拒绝覆盖；先审阅/卸载再明确重装。
+
+生成的hook使用绑定Python的 `-I -m secretlens`：不从待审工作目录、PYTHONPATH或PYTHONHOME导入同名模块。全索引规则检测、覆盖超限或runtime缺失时都阻止普通commit；Git自己的临时 `GIT_INDEX_FILE` 保留，部分提交扫描本次实际临时索引，而不是错扫另一个暂存集合。默认限额不变，可在安装时显式设置三个 `--max-*` 参数。审批只有安装时显式 `--approvals /trusted/policy.json` 才绑定，安装先验证格式/到期；commit时重新读取验证，过期或缺失阻止提交。不自动加载仓库审批文件。
+
+仅支持具有本地 `.git` 目录的normal仓库根；bare、子模块、linked worktree/外部Git目录、`core.hooksPath` 配置、根/.git/hooks联接或符号链接都拒绝，避免改变共享/外部hook。需要自定义hook链时手工调用已安装隔离runtime的扫描命令，不静默替换原链。普通仓库日后新增worktree可能共享Git hooks，需自行审查作用范围。
+
+```sh
+secretlens --repo /path/to/repository --uninstall-hook
+```
+
+卸载只删除**原样生成**且身份/修改元数据未变化的本地hook；用户改过的脚本、普通自定义hook或链接不删除。不是签名身份或抵抗本机恶意改写的沙箱。卸载后不自动阻止commit；不改索引、历史、配置、其他hook或runtime。路径失效时普通提交失败，可明确卸载/修复环境，不回退到未验证扫描。
+
+Hook是本机防误提交工具：`--no-verify`、其他软件改写hook、恶意本机权限、检查期间并发暂存仍可绕过，必须在受保护CI上另跑扫描。绑定解释器不意味着锁定以后安装的包字节。报告/配置内只有路径、规则/指纹和runtime元数据，不回显密钥；仍需保护这些元数据。当前没有增量扫描或index锁定到提交的原子保证。
+
+真实临时Git测试覆盖clean commit、暂存secret但工作树已清理、影子Python模块、部分提交、缺runtime/超限拒绝、显式审批、已有hook/修改hook保护、并发安装和卸载。本轮不在用户现有14仓库安装hook。
+
+独立安装后演示：用该runtime执行 `python -I examples/hook_demo.py`，整个过程只在临时合成Git仓库里操作，展示通过/阻止/卸载，不触碰个人仓库。这里的python须替换为已安装环境的Python路径。
+
+## 后续工程路线
 
 1. 受控精确例外、审批/过期机制，禁止泛化忽略整个目录。
-2. 安全 Git hook 安装与增量扫描，保留完整覆盖证明。
+2. 在已实现显式hook安装/卸载基础上补环境迁移和经过证明的增量扫描；不能静默减少覆盖。
 3. 扩展供应商规则，使用合成语料评测误报/漏报。
 4. 多编码和大型仓库压力/性能评测，优化批量 blob 读取。
 5. 兼容性版本、依赖供应链审查与正式发布。
