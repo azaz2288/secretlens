@@ -1,0 +1,26 @@
+name: tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  unittest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q secretlens tests
+      - run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Installed CLI smoke test
+        shell: bash
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          secretlens --help
+          python -c "import secretlens; assert 'site-packages' in secretlens.__file__"
