@@ -1,5 +1,12 @@
 # Verified engineering record
 
+## 2026-10-06 — v0.5 independent synthetic rule evaluation
+- Implemented deterministic647-case corpus (625 supported/22 known-gap), independent rule/line/column truth, per-rule per-sample TP/FP/FN/TN and exact occurrence/localization regression checking. Metadata-only digest-bound CLI, no file-input/network/API; source and installed evaluation added to CI. Scanner rules unchanged.
+- All supported cases pass. Known-gap failures remain in overall: Github109TP/5FN, AWS18TP/5FN, private-key36TP/5FN, assignment198TP/1FP/6FN. No-BOM wide/escaped JSON and short values are misses, a test placeholder is false positive. Not real-world precision, random corpus, universal secrecy or active provider validation; correlated encoding cases are disclosed in evaluation/README.md.
+-8 evaluator tests cover independent mutated-scanner oracles, location/count failures despite perfect presence, no-content report, null denominators, canonical digests, malformed input/metadata and CLI0/1/2. First construction failed on case-name underscore validation; second negative label incorrectly appended a legal37th token character. Fixed corpus ID validation/independent negative label, not scanning regex. Final70tests Windows68passed/2platform skips, compileall and diff check passed.
+- Final wheel secretlens-0.5.0-py3-none-any.whl SHA2564b9625e046f915456c2c725a334a613499bf34488d609ac0f4e142bcf5c3c728 installed into project .venv; outside source tree version/site-packages assertion, isolated module evaluation, installed secretlens-evaluate --check, pip check and real temporary Git hook demo passed. Subsequent progress-only changes do not change installed evaluation bytes; remote SHA and same-SHA CI are tracked separately after publication.
+- v0.4 final161e0c8 Linux CI runner was not acquired (no steps), Windowssuccess; not reported as full cross-platform green and not substituted with223a5d7 historical success. No hooks automatically installed in portfolio repositories.
+
 ## 2026-10-06 — initial usable slice, not flagship completion
 - Implemented read-only full-index scanning with immutable blob IDs, secret-free reports and fail-closed limits.
 - 24 unittest cases: 23 passed on Windows, one POSIX filename case skipped because Windows forbids tab/newline names. Linux CI must run that case before claiming cross-platform verification.
