@@ -1,14 +1,16 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
-from secretlens.core import ScanError, scan_blob, scan_index
+from secretlens.core import ScanError, _batch_blobs, _object_header, _read_exact, scan_blob, scan_index
 
 
 def token():
@@ -67,6 +69,63 @@ class BlobTests(unittest.TestCase):
         self.assertNotEqual(first, scan_blob("two", token().encode())[0]["fingerprint"])
 
 
+class BatchProtocolTests(unittest.TestCase):
+    def test_strict_object_headers(self):
+        oid = "a" * 40
+        self.assertEqual(_object_header(f"{oid} blob 0\n".encode(), oid), 0)
+        for value in (f"{oid} missing\n", f"{oid} tree 3\n", f"{oid} blob -1\n",
+                      f"{oid} blob 01\n", f"{oid} blob 1", f"{'b' * 40} blob 1\n"):
+            with self.subTest(header=value), self.assertRaises(ScanError):
+                _object_header(value.encode(), oid)
+
+    def test_read_exact_handles_short_pipe_reads_and_truncation(self):
+        class ShortReader(io.BytesIO):
+            def read(self, size):
+                return super().read(min(size, 2))
+        self.assertEqual(_read_exact(ShortReader(b"abcdef"), 6), b"abcdef")
+        with self.assertRaises(ScanError):
+            _read_exact(ShortReader(b"abc"), 4)
+
+    def test_invalid_framing_and_hash_fail_closed_and_close_process(self):
+        blob = b"safe"
+        oid = hashlib.sha1(b"blob 4\0" + blob).hexdigest()
+        header = f"{oid} blob 4\n".encode()
+        class FakeProcess:
+            def __init__(self, response):
+                self.stdin, self.stdout = io.BytesIO(), io.BytesIO(response)
+                self.killed = False
+            def poll(self):
+                return 0 if self.killed else None
+            def kill(self):
+                self.killed = True
+            def wait(self, timeout=None):
+                return 0
+        responses = (header + b"sa", header + b"safe!", header + b"evil\n",
+                     header + b"safe\nextra", f"{oid} blob 5\n".encode() + b"12345\n")
+        for response in responses:
+            child = FakeProcess(response)
+            with self.subTest(response=response), patch("secretlens.core.subprocess.Popen", return_value=child):
+                with self.assertRaises(ScanError):
+                    list(_batch_blobs(Path("."), [("file", oid)], {oid: 4}))
+            self.assertTrue(child.killed)
+            self.assertTrue(child.stdin.closed)
+            self.assertTrue(child.stdout.closed)
+
+    def test_watchdog_terminates_a_real_stalled_child(self):
+        original = subprocess.Popen
+        children = []
+        def stalled(*args, **kwargs):
+            child = original([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+            children.append(child)
+            return child
+        start = time.monotonic()
+        with patch("secretlens.core.subprocess.Popen", side_effect=stalled), patch("secretlens.core.BATCH_TIMEOUT_SECONDS", 0.2):
+            with self.assertRaises(ScanError):
+                list(_batch_blobs(Path("."), [("file", "a" * 40)], {"a" * 40: 4}))
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertIsNotNone(children[0].poll())
+
+
 class IndexTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -122,8 +181,8 @@ class IndexTests(unittest.TestCase):
         import secretlens.core as core
         original_git = core._git
 
-        def mutate_after_listing(repository, *args):
-            output = original_git(repository, *args)
+        def mutate_after_listing(repository, *args, **kwargs):
+            output = original_git(repository, *args, **kwargs)
             if args[0] == "ls-files":
                 self.stage("changing", b"clean")
             return output
@@ -191,6 +250,39 @@ class IndexTests(unittest.TestCase):
         self.stage("clean", b"safe")
         self.assertEqual(scan_index(self.root)["index_sha256"],
                          hashlib.sha256(self.git("ls-files", "--stage", "-z")).hexdigest())
+
+    def test_large_index_uses_constant_git_process_count(self):
+        for number in range(40):
+            (self.root / f"file-{number}").write_text(f"safe-{number}")
+        self.git("add", "--all")
+        import secretlens.core as core
+        with patch.object(core, "_git", wraps=core._git) as git:
+            report = scan_index(self.root)
+        self.assertEqual(report["files_scanned"], 40)
+        self.assertLessEqual(git.call_count, 2)
+
+    def test_replacement_objects_cannot_hide_indexed_secret(self):
+        self.stage("secret", token().encode())
+        original = self.git("rev-parse", ":secret").strip().decode()
+        replacement = self.git("hash-object", "-w", "--stdin", input=b"x" * len(token())).strip().decode()
+        self.git("replace", original, replacement)
+        self.assertFalse(scan_index(self.root)["clean"])
+
+    def test_duplicate_blob_findings_remain_path_scoped(self):
+        self.stage("a", token().encode())
+        self.stage("b", token().encode())
+        report = scan_index(self.root)
+        self.assertEqual([item["path"] for item in report["findings"]], ["a", "b"])
+        self.assertNotEqual(report["findings"][0]["fingerprint"], report["findings"][1]["fingerprint"])
+
+    def test_sha256_repository_object_protocol(self):
+        nested = self.root / "sha256"
+        nested.mkdir()
+        result = subprocess.run(["git", "init", "--quiet", "--object-format=sha256", str(nested)], capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        (nested / "candidate").write_text(token())
+        self.assertEqual(subprocess.run(["git", "-C", str(nested), "add", "."], capture_output=True).returncode, 0)
+        self.assertFalse(scan_index(nested)["clean"])
 
     def test_cli_codes_and_redacted_output(self):
         def run(*extra):

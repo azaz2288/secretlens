@@ -29,6 +29,8 @@ secretlens --repo /path/to/repository
 
 ## v0.2 受控精确例外
 
+v0.3批量读取：非空索引用三个Git进程完成索引列表、全部对象大小预检和逐文件流式读取；不会先读内容再发现总量超限。验证header、类型、size、终止符与Git对象hash（SHA1/SHA256仓库均支持），禁用replace refs及缺失对象的惰性网络获取，拒绝截断或异常尾部。30秒批处理watchdog会终止卡住的Git子进程；这是进程/I/O截止，不是恶意输入的CPU/内存沙箱。仍按路径分别扫描，不缓存跨文件秘密。10,000文件实测见benchmarks/README.md。
+
 只有显式传入 `--approvals trusted-policy.json` 才使用策略，不自动信任被检查仓库中的文件。格式：
 
 ```json
