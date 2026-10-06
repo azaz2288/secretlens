@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 from . import __version__
-from .core import ScanError
+from .core import DEFAULT_MAX_FINDINGS, ScanError
 from .policy import apply_policy, load_policy
 
 MARKER = '# SecretLens managed pre-commit hook v1'
@@ -61,7 +61,8 @@ def _location(repository):
 
 
 def _config(config):
-    if not isinstance(config, dict) or set(config) != {'python', 'approvals', 'max_blob_bytes', 'max_total_bytes', 'max_files'}:
+    legacy_keys = {'python', 'approvals', 'max_blob_bytes', 'max_total_bytes', 'max_files'}
+    if not isinstance(config, dict) or set(config) not in (legacy_keys, legacy_keys | {'max_findings'}):
         raise ScanError('Unsupported managed hook configuration')
     for key in ('python', 'approvals'):
         value = config[key]
@@ -71,7 +72,7 @@ def _config(config):
                 or any(ord(char) < 32 or ord(char) == 127 for char in value)):
             raise ScanError('Hook runtime and approval paths must be absolute, control-free paths')
     if any(type(config[key]) is not int or config[key] < 1
-           for key in ('max_blob_bytes', 'max_total_bytes', 'max_files')):
+           for key in ('max_blob_bytes', 'max_total_bytes', 'max_files', 'max_findings') if key in config):
         raise ScanError('Scan limits must be positive integers')
     return config
 
@@ -85,6 +86,9 @@ def _render(config):
     command = [config['python'].replace('\\', '/'), '-I', '-m', 'secretlens', '--repo', '.',
                '--max-blob-bytes', str(config['max_blob_bytes']),
                '--max-total-bytes', str(config['max_total_bytes']), '--max-files', str(config['max_files'])]
+    # Preserve exact v0.4/v0.5 hook bytes for unchanged legacy-hook removal.
+    if 'max_findings' in config:
+        command.extend(['--max-findings', str(config['max_findings'])])
     if config['approvals'] is not None:
         command.extend(['--approvals', config['approvals'].replace('\\', '/')])
     content = ('#!/bin/sh\n' + MARKER + '\n' + CONFIG_PREFIX + encoded + '\nexec '
@@ -107,10 +111,11 @@ def _runtime(python):
 
 
 def install_hook(repository, *, python=None, approvals=None, max_blob_bytes=1024 * 1024,
-                 max_total_bytes=32 * 1024 * 1024, max_files=10000):
+                 max_total_bytes=32 * 1024 * 1024, max_files=10000, max_findings=DEFAULT_MAX_FINDINGS):
     python = Path(python or sys.executable).absolute()  # Do not resolve venv symlinks to the base interpreter.
     config = {'python': str(python), 'approvals': None if approvals is None else str(Path(approvals).absolute()),
-              'max_blob_bytes': max_blob_bytes, 'max_total_bytes': max_total_bytes, 'max_files': max_files}
+              'max_blob_bytes': max_blob_bytes, 'max_total_bytes': max_total_bytes, 'max_files': max_files,
+              'max_findings': max_findings}
     content = _render(config)
     target = _location(repository)
     if target.exists() or _linked(target):

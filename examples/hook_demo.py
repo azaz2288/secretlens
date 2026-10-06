@@ -37,7 +37,20 @@ with tempfile.TemporaryDirectory(prefix="SecretLens hook demo's ") as temporary:
     assert installed['sha256'] == removed['sha256']
     assert not (repo / '.git/hooks/pre-commit').exists()
     assert not scan_index(repo)['clean']  # Uninstall doesn't alter the index.
+    budget_hook = install_hook(repo, python=sys.executable, max_findings=1)
+    sample.write_text((candidate + '\n') * 2)
+    assert git('add', 'sample.txt').returncode == 0
+    snapshot = git('ls-files', '--stage', '-z').stdout
+    over_budget = git('commit', '-qm', 'must reject dense synthetic blob')
+    assert over_budget.returncode != 0
+    assert 'Finding count exceeds scan limit' in over_budget.stdout + over_budget.stderr
+    assert candidate not in over_budget.stdout + over_budget.stderr
+    assert git('rev-parse', 'HEAD').stdout == baseline
+    assert git('ls-files', '--stage', '-z').stdout == snapshot
+    assert uninstall_hook(repo)['sha256'] == budget_hook['sha256']
     print(json.dumps({'synthetic_temporary_repo_only': True, 'clean_commit_passed': True,
                       'staged_candidate_blocked': True, 'candidate_not_disclosed': True,
                       'original_head_preserved': True, 'managed_hook_removed': True,
-                      'staged_bytes_unchanged_after_removal': True}))
+                      'staged_bytes_unchanged_after_removal': True,
+                      'finding_budget_bound_to_installed_hook': True,
+                      'over_budget_commit_blocked_without_disclosure': True}))

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-from .core import ScanError, scan_index
+from .core import DEFAULT_MAX_FINDINGS, ScanError, scan_index
 from .policy import apply_policy, load_policy
 from .hooks import install_hook, uninstall_hook
 
@@ -14,6 +14,8 @@ def main(argv=None):
     parser.add_argument("--max-blob-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--max-total-bytes", type=int, default=32 * 1024 * 1024)
     parser.add_argument("--max-files", type=int, default=10000)
+    parser.add_argument("--max-findings", type=int, default=DEFAULT_MAX_FINDINGS,
+                        help="total candidate occurrences; overflow fails closed, never truncates")
     parser.add_argument("--approvals", type=Path, help="Explicit trusted exact approval policy (never auto-loaded)")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument('--install-hook', action='store_true', help='Opt-in pre-commit gate; never overwrite an existing hook')
@@ -26,7 +28,7 @@ def main(argv=None):
         if args.install_hook:
             report = install_hook(args.repo, python=args.python, approvals=args.approvals,
                                   max_blob_bytes=args.max_blob_bytes, max_total_bytes=args.max_total_bytes,
-                                  max_files=args.max_files)
+                                  max_files=args.max_files, max_findings=args.max_findings)
             print(json.dumps(report, ensure_ascii=True))
             return 0
         if args.uninstall_hook:
@@ -34,7 +36,8 @@ def main(argv=None):
             print(json.dumps(report, ensure_ascii=True))
             return 0
         report = scan_index(args.repo, max_blob_bytes=args.max_blob_bytes,
-                            max_total_bytes=args.max_total_bytes, max_files=args.max_files)
+                            max_total_bytes=args.max_total_bytes, max_files=args.max_files,
+                            max_findings=args.max_findings)
         if args.approvals:
             report = apply_policy(report, load_policy(args.approvals))
     except ScanError as exc:

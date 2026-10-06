@@ -16,7 +16,7 @@ jobs:
           python-version: '3.12'
       - run: python -m unittest discover -s tests -v
       - run: python -m secretlens.evaluation --check
-      - run: python -m compileall -q secretlens tests examples
+      - run: python -m compileall -q secretlens tests examples benchmarks
       - run: python -m pip wheel --no-deps --wheel-dir dist .
       - name: Installed CLI smoke test
         shell: bash
@@ -28,3 +28,4 @@ jobs:
           python -I "$GITHUB_WORKSPACE/examples/hook_demo.py"
           python -I -m secretlens.evaluation --check
           secretlens-evaluate --check
+          python -I "$GITHUB_WORKSPACE/tests/test_finding_limits.py" -v

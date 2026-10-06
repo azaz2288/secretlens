@@ -10,6 +10,7 @@ import subprocess
 import threading
 
 BATCH_TIMEOUT_SECONDS = 30
+DEFAULT_MAX_FINDINGS = 10000
 
 
 class ScanError(Exception):
@@ -141,35 +142,47 @@ def _text(blob: bytes) -> str:
     return blob.decode(encoding, errors="replace")
 
 
-def scan_blob(path: str, blob: bytes) -> list[dict]:
-    """Metadata only; never include snippets or matched credentials."""
+def scan_blob(path: str, blob: bytes, *, max_findings: int = DEFAULT_MAX_FINDINGS) -> list[dict]:
+    """Metadata only, with a fail-closed budget (zero permits clean blobs only)."""
+    if type(max_findings) is not int or max_findings < 0:
+        raise ScanError("Finding limit must be a nonnegative integer")
     content = _text(blob)
     findings = []
     for rule, pattern, group in RULES:
+        cursor, line, last_newline = 0, 1, -1
         for match in pattern.finditer(content):
+            if len(findings) >= max_findings:
+                raise ScanError("Finding count exceeds scan limit; coverage is incomplete")
             start = match.start(group)
+            # Matches advance within each rule: never recount the whole prefix.
+            line += content.count("\n", cursor, start)
+            newline = content.rfind("\n", cursor, start)
+            if newline >= 0:
+                last_newline = newline
+            cursor = start
             value = match.group(group)
             fingerprint = hashlib.sha256(
                 path.encode("utf-8", errors="surrogateescape") + b"\x00" +
                 rule.encode("ascii") + b"\x00" + value.encode("utf-8")
             ).hexdigest()
             findings.append({"path": path, "rule": rule,
-                             "line": content.count("\n", 0, start) + 1,
-                             "column": start - content.rfind("\n", 0, start),
+                             "line": line,
+                             "column": start - last_newline,
                              "fingerprint": fingerprint})
     return sorted(findings, key=lambda item: (item["line"], item["column"], item["rule"]))
 
 
 def scan_index(repository: Path, *, max_blob_bytes: int = 1024 * 1024,
                max_total_bytes: int = 32 * 1024 * 1024,
-               max_files: int = 10000) -> dict:
+               max_files: int = 10000, max_findings: int = DEFAULT_MAX_FINDINGS) -> dict:
     """Inspect every file in the index, including unchanged tracked files.
 
     Object IDs from one index listing pin the input. No worktree file is read.
-    Limits fail closed, before any blob is read. Symlinks/submodules are rejected.
+    Size/file limits precede content reads; candidate overflow also fails closed.
+    Symlinks/submodules are rejected. Findings are never silently truncated.
     """
     if any(type(value) is not int or value < 1 for value in
-           (max_blob_bytes, max_total_bytes, max_files)):
+           (max_blob_bytes, max_total_bytes, max_files, max_findings)):
         raise ScanError("Scan limits must be positive integers")
     index = _git(repository, "ls-files", "--stage", "-z")
     entries = []
@@ -212,7 +225,7 @@ def scan_index(repository: Path, *, max_blob_bytes: int = 1024 * 1024,
     if entries:
         with closing(_batch_blobs(repository, entries, sizes)) as blobs:
             for path, blob in blobs:
-                findings.extend(scan_blob(path, blob))
+                findings.extend(scan_blob(path, blob, max_findings=max_findings - len(findings)))
                 del blob
     return {"version": 1, "scope": "entire-git-index", "complete": True,
             "clean": not findings, "files_scanned": len(entries),

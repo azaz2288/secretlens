@@ -157,6 +157,50 @@ class HookTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('coverage is incomplete', result.stdout + result.stderr)
 
+    def test_finding_budget_bound_to_hook_blocks_approved_overflow(self):
+        self.stage((token() + '\n') * 2)
+        finding = scan_index(self.repo)['findings'][0]
+        policy = self.repo / 'trusted.json'
+        policy.write_text(json.dumps({'version': 1, 'approvals': [{
+            'path': 'value.txt', 'rule': finding['rule'], 'fingerprint': finding['fingerprint'],
+            'reviewer': 'synthetic reviewer', 'reason': 'synthetic density fixture',
+            'expires_at': (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)).isoformat()}]}))
+        self.install(max_findings=1, approvals=policy)
+        content = self.hook.read_bytes()
+        self.assertIn(b'--max-findings 1', content)
+        before = self.git('ls-files', '--stage', '-z').stdout
+        result = self.git('commit', '-qm', 'over budget', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Finding count exceeds scan limit', result.stdout + result.stderr)
+        self.assertNotIn(token(), result.stdout + result.stderr)
+        self.assertEqual(before, self.git('ls-files', '--stage', '-z').stdout)
+        uninstall_hook(self.repo)
+        self.install(max_findings=2, approvals=policy)
+        self.git('commit', '-qm', 'explicit synthetic approved budget')
+
+    def test_invalid_finding_budget_creates_no_hook(self):
+        for value in (0, -1, True, False, 2.5, '2', None):
+            with self.subTest(value=value), self.assertRaises(ScanError):
+                self.install(max_findings=value)
+            self.assertFalse(self.hook.exists())
+
+    def test_unchanged_legacy_hook_can_be_removed_without_new_configuration(self):
+        import base64
+        import shlex
+        from secretlens.hooks import MARKER, CONFIG_PREFIX
+        config = {'python': str(self.python.absolute()), 'approvals': None,
+                  'max_blob_bytes': 1048576, 'max_total_bytes': 33554432, 'max_files': 10000}
+        encoded = base64.b64encode(json.dumps(config, sort_keys=True, ensure_ascii=True,
+                                              separators=(',', ':')).encode()).decode('ascii')
+        command = [config['python'].replace('\\', '/'), '-I', '-m', 'secretlens', '--repo', '.',
+                   '--max-blob-bytes', '1048576', '--max-total-bytes', '33554432', '--max-files', '10000']
+        original = ('#!/bin/sh\n' + MARKER + '\n' + CONFIG_PREFIX + encoded + '\nexec '
+                    + ' '.join(shlex.quote(value) for value in command) + '\n').encode()
+        self.hook.write_bytes(original)
+        result = uninstall_hook(self.repo)
+        self.assertEqual(result['action'], 'uninstalled')
+        self.assertFalse(self.hook.exists())
+
     def test_explicit_approval_used_but_repo_policy_not_auto_loaded(self):
         self.stage(token())
         finding = scan_index(self.repo)['findings'][0]
